@@ -5,6 +5,7 @@ const DEFAULT_FILE = "prometheus/web/api/v1/openapi_examples.go";
 const API_BASE =
   window.location.hostname === "localhost" ? "http://localhost:3000" : "http://backend:3000";
 const MAX_TRANSITIVE_DEPTH = 2;
+const MAX_GRAPH_NODES = 60;
 
 const GO_KEYWORDS = new Set([
   "break",
@@ -181,6 +182,93 @@ function findFunctionMatches(line, functionsOnLine) {
 
       return match.start >= all[index - 1].end;
     });
+}
+
+function rankTraversalNode(node, selectedFunction) {
+  const depth = Number(node.depth || 0);
+  const samePackage = node.package && node.package === selectedFunction?.package ? 1 : 0;
+  const sameFile = node.file && node.file === selectedFunction?.file ? 1 : 0;
+  const hasLocalSource = node.file ? 1 : 0;
+  const externalPenalty = String(node.id || "").startsWith("ext::") ? 1 : 0;
+
+  return (
+    depth * 100 -
+    samePackage * 20 -
+    sameFile * 10 -
+    hasLocalSource * 5 +
+    externalPenalty * 15
+  );
+}
+
+function takeMeaningfulNodes(nodes, budget, selectedFunction) {
+  if (budget <= 0) {
+    return [];
+  }
+
+  return [...nodes]
+    .sort((left, right) => {
+      const leftScore = rankTraversalNode(left, selectedFunction);
+      const rightScore = rankTraversalNode(right, selectedFunction);
+
+      if (leftScore !== rightScore) {
+        return leftScore - rightScore;
+      }
+
+      return String(left.name || "").localeCompare(String(right.name || ""));
+    })
+    .slice(0, budget);
+}
+
+function selectGraphData(graphData, graphView, selectedFunction) {
+  const neighborhood = Array.isArray(graphData.neighborhood) ? graphData.neighborhood : [];
+  const callChain = Array.isArray(graphData.callChain) ? graphData.callChain : [];
+  const callers = Array.isArray(graphData.callers) ? graphData.callers : [];
+
+  if (graphView === "neighbors") {
+    return {
+      neighborhood,
+      callChain: [],
+      callers: [],
+    };
+  }
+
+  const directIds = new Set(neighborhood.map((node) => node.id));
+  const remainingBudget = Math.max(MAX_GRAPH_NODES - 1 - directIds.size, 0);
+  const filteredCallers = callers.filter((node) => !directIds.has(node.id));
+  const filteredCallees = callChain.filter((node) => !directIds.has(node.id));
+
+  const callerBudget = Math.floor(remainingBudget / 2);
+  const calleeBudget = remainingBudget - callerBudget;
+  let selectedCallers = takeMeaningfulNodes(filteredCallers, callerBudget, selectedFunction);
+  let selectedCallees = takeMeaningfulNodes(filteredCallees, calleeBudget, selectedFunction);
+
+  const leftoverBudget =
+    remainingBudget - selectedCallers.length - selectedCallees.length;
+
+  if (leftoverBudget > 0) {
+    const selectedIds = new Set([
+      ...selectedCallers.map((node) => node.id),
+      ...selectedCallees.map((node) => node.id),
+    ]);
+    const remainingNodes = [...filteredCallers, ...filteredCallees].filter(
+      (node) => !selectedIds.has(node.id),
+    );
+    const extras = takeMeaningfulNodes(remainingNodes, leftoverBudget, selectedFunction);
+
+    for (const node of extras) {
+      if (callers.some((candidate) => candidate.id === node.id)) {
+        selectedCallers.push(node);
+      } else {
+        selectedCallees.push(node);
+      }
+    }
+  }
+
+  return {
+    neighborhood,
+    callers: selectedCallers,
+    callChain: selectedCallees,
+  };
 }
 
 function buildGraphElements(selectedFunction, graphData) {
@@ -542,8 +630,10 @@ function FileBrowser({
 
 function GraphPanel({
   elements,
+  graphView,
   selectedFunction,
   onNodeSelect,
+  onGraphViewChange,
   onBack,
   isLoading,
   error,
@@ -772,9 +862,31 @@ function GraphPanel({
   return (
     <section className="panel graph-panel">
       <div className="graph-topbar">
-        <button type="button" className="ghost-button" onClick={onBack}>
-          Back
-        </button>
+        <div className="graph-actions">
+          <button type="button" className="ghost-button" onClick={onBack}>
+            Back
+          </button>
+          <div className="view-switch">
+            <button
+              type="button"
+              className={`view-switch__button ${
+                graphView === "neighbors" ? "view-switch__button--active" : ""
+              }`}
+              onClick={() => onGraphViewChange("neighbors")}
+            >
+              Neighbors
+            </button>
+            <button
+              type="button"
+              className={`view-switch__button ${
+                graphView === "deep" ? "view-switch__button--active" : ""
+              }`}
+              onClick={() => onGraphViewChange("deep")}
+            >
+              Deep
+            </button>
+          </div>
+        </div>
         <div className="graph-meta">
           <span className="meta-pill">{selectedFunction?.name || "-"}</span>
           <span className="meta-pill meta-pill--muted">{selectedFunction?.package || "-"}</span>
@@ -812,15 +924,20 @@ function App() {
   const [sourceError, setSourceError] = useState("");
   const [graphError, setGraphError] = useState("");
   const [selectedFunction, setSelectedFunction] = useState(null);
+  const [graphView, setGraphView] = useState("neighbors");
   const [graphData, setGraphData] = useState({
     neighborhood: [],
     callChain: [],
     callers: [],
   });
+  const activeGraphData = useMemo(
+    () => selectGraphData(graphData, graphView, selectedFunction),
+    [graphData, graphView, selectedFunction],
+  );
 
   const graphElements = useMemo(
-    () => buildGraphElements(selectedFunction, graphData),
-    [graphData, selectedFunction],
+    () => buildGraphElements(selectedFunction, activeGraphData),
+    [activeGraphData, selectedFunction],
   );
 
   const loadDirectory = useCallback(async (path) => {
@@ -864,6 +981,7 @@ function App() {
 
       if (options.clearGraph) {
         setSelectedFunction(null);
+        setGraphView("neighbors");
         setGraphData({ neighborhood: [], callChain: [], callers: [] });
         setGraphError("");
       }
@@ -942,6 +1060,7 @@ function App() {
 
   async function handleFunctionClick(functionMeta) {
     setSelectedFunction(functionMeta);
+    setGraphView("neighbors");
     setMode("graph");
     await loadGraph(functionMeta);
   }
@@ -953,6 +1072,7 @@ function App() {
   function handleBackToBrowse() {
     setMode("browse");
     setSelectedFunction(null);
+    setGraphView("neighbors");
     setGraphData({ neighborhood: [], callChain: [], callers: [] });
     setGraphError("");
   }
@@ -993,8 +1113,10 @@ function App() {
         <section className="graph-mode">
           <GraphPanel
             elements={graphElements}
+            graphView={graphView}
             selectedFunction={selectedFunction}
             onNodeSelect={handleGraphNodeSelect}
+            onGraphViewChange={setGraphView}
             onBack={handleBackToBrowse}
             isLoading={isGraphLoading}
             error={graphError}
