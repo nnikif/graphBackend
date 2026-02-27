@@ -152,11 +152,12 @@ code {
 }
 
 .source-panel {
-  display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   padding: 0.85rem;
   min-width: 0;
   height: 100%;
+  min-height: 0;
   overflow: hidden;
 }
 
@@ -171,6 +172,10 @@ code {
   min-height: 0;
   height: 100%;
   overflow: hidden;
+}
+
+.graph-mode > * {
+  min-height: 0;
 }
 
 .graph-panel {
@@ -248,9 +253,10 @@ code {
 .graph-hover-card {
   position: absolute;
   top: 4.25rem;
-  right: 1.25rem;
+  left: 1rem;
   z-index: 2;
-  width: min(22rem, calc(100% - 2.5rem));
+  width: min(24rem, calc(100% - 2rem));
+  max-width: calc(100% - 2rem);
   padding: 0.8rem 0.9rem;
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 16px;
@@ -283,6 +289,7 @@ code {
 
 .file-strip {
   margin-bottom: 0.75rem;
+  flex: 0 0 auto;
 }
 
 .section-label {
@@ -292,6 +299,7 @@ code {
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
+  flex: 0 0 auto;
 }
 
 .source-viewer {
@@ -300,9 +308,13 @@ code {
   border-radius: 18px;
   padding: 0.75rem 0;
   overflow: auto;
+  flex: 1 1 auto;
   min-height: 0;
-  height: 100%;
   overscroll-behavior: contain;
+}
+
+.source-panel--graph {
+  min-height: 0;
 }
 
 .source-line {

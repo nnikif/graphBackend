@@ -1,9 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import cytoscape from "cytoscape";
 
 const DEFAULT_FILE = "prometheus/web/api/v1/openapi_examples.go";
 const API_BASE =
   window.location.hostname === "localhost" ? "http://localhost:3000" : "http://backend:3000";
+const MAX_TRANSITIVE_DEPTH = 2;
 
 const GO_KEYWORDS = new Set([
   "break",
@@ -107,6 +108,45 @@ function highlightGoHtml(line) {
   });
 }
 
+function getFunctionNameCandidates(name) {
+  const raw = String(name || "").trim();
+  if (!raw) {
+    return [];
+  }
+
+  const leaf = raw.split(".").pop() || raw;
+  const cleanedLeaf = leaf.replace(/^[*(\s]+/, "").replace(/[)\s]+$/g, "");
+
+  return Array.from(
+    new Set(
+      [cleanedLeaf, leaf, raw]
+        .map((candidate) => candidate.trim())
+        .filter(Boolean)
+        .sort((left, right) => right.length - left.length),
+    ),
+  );
+}
+
+function findIdentifierRange(line, candidate) {
+  let start = line.indexOf(candidate);
+
+  while (start !== -1) {
+    const end = start + candidate.length;
+    const before = start === 0 ? "" : line[start - 1];
+    const after = end >= line.length ? "" : line[end];
+    const beforeOk = !/[A-Za-z0-9_]/.test(before);
+    const afterOk = !/[A-Za-z0-9_]/.test(after);
+
+    if (beforeOk && afterOk) {
+      return { start, end };
+    }
+
+    start = line.indexOf(candidate, start + 1);
+  }
+
+  return null;
+}
+
 function findFunctionMatches(line, functionsOnLine) {
   if (!functionsOnLine || functionsOnLine.length === 0) {
     return [];
@@ -114,15 +154,22 @@ function findFunctionMatches(line, functionsOnLine) {
 
   return functionsOnLine
     .map((fn) => {
-      const start = line.indexOf(fn.name);
-      if (start === -1) {
+      const matchRange = getFunctionNameCandidates(fn.name)
+        .map((candidate) => ({
+          candidate,
+          range: findIdentifierRange(line, candidate),
+        }))
+        .find((entry) => entry.range);
+
+      if (!matchRange) {
         return null;
       }
 
       return {
         ...fn,
-        start,
-        end: start + fn.name.length,
+        displayName: matchRange.candidate,
+        start: matchRange.range.start,
+        end: matchRange.range.end,
       };
     })
     .filter(Boolean)
@@ -329,7 +376,7 @@ function FunctionLine({
         }`}
         onClick={() => onFunctionClick(match)}
       >
-        {match.name}
+        {match.displayName || match.name}
       </button>,
     );
     cursor = match.end;
@@ -355,6 +402,7 @@ function SourceViewer({
   onFunctionClick,
 }) {
   const containerRef = useRef(null);
+  const lineRefs = useRef(new Map());
   const lines = useMemo(() => content.split("\n"), [content]);
   const functionsByLine = useMemo(() => {
     const nextMap = new Map();
@@ -368,18 +416,22 @@ function SourceViewer({
     return nextMap;
   }, [functions]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!containerRef.current || !selectedLine) {
       return;
     }
 
-    const targetLine = containerRef.current.querySelector(`[data-line="${selectedLine}"]`);
+    const targetLine = lineRefs.current.get(selectedLine);
     if (!targetLine) {
       return;
     }
 
-    targetLine.scrollIntoView({
-      block: "center",
+    const container = containerRef.current;
+    const nextTop =
+      targetLine.offsetTop - container.clientHeight / 2 + targetLine.clientHeight / 2;
+
+    container.scrollTo({
+      top: Math.max(nextTop, 0),
       behavior: "smooth",
     });
   }, [selectedLine, content]);
@@ -387,16 +439,24 @@ function SourceViewer({
   return (
     <div ref={containerRef} className="source-viewer" aria-live="polite">
       {lines.map((line, index) => {
+        const lineNumber = index + 1;
         const lineFunctions = functionsByLine.get(index + 1) || [];
         const isSelected = lineFunctions.some((fn) => fn.function_id === selectedFunctionId);
 
         return (
           <div
-            key={index + 1}
+            key={lineNumber}
+            ref={(element) => {
+              if (element) {
+                lineRefs.current.set(lineNumber, element);
+              } else {
+                lineRefs.current.delete(lineNumber);
+              }
+            }}
             className={`source-line ${isSelected ? "source-line--selected" : ""}`}
-            data-line={index + 1}
+            data-line={lineNumber}
           >
-            <span className="line-number">{index + 1}</span>
+            <span className="line-number">{lineNumber}</span>
             <code className="line-code">
               <FunctionLine
                 line={line}
@@ -833,6 +893,13 @@ function App() {
       setPackageName(sourcePayload.package || "-");
       setContent(sourcePayload.content || "");
       setFunctions(Array.isArray(functionsPayload.functions) ? functionsPayload.functions : []);
+      setSelectedFunction({
+        function_id: sourcePayload.functionId || functionMeta.function_id,
+        name: sourcePayload.name || functionMeta.name,
+        file: sourcePayload.file || functionMeta.file,
+        line: sourcePayload.line || functionMeta.line,
+        package: sourcePayload.package || functionMeta.package,
+      });
       await loadDirectory(getParentPath(sourcePayload.file));
     } catch (error) {
       setSourceError(String(error.message || error));
@@ -853,8 +920,12 @@ function App() {
       ]);
       setGraphData({
         neighborhood: Array.isArray(neighborhoodPayload.nodes) ? neighborhoodPayload.nodes : [],
-        callChain: Array.isArray(callChainPayload.nodes) ? callChainPayload.nodes : [],
-        callers: Array.isArray(callersPayload.nodes) ? callersPayload.nodes : [],
+        callChain: Array.isArray(callChainPayload.nodes)
+          ? callChainPayload.nodes.filter((node) => Number(node.depth || 0) <= MAX_TRANSITIVE_DEPTH)
+          : [],
+        callers: Array.isArray(callersPayload.nodes)
+          ? callersPayload.nodes.filter((node) => Number(node.depth || 0) <= MAX_TRANSITIVE_DEPTH)
+          : [],
       });
     } catch (error) {
       setGraphData({ neighborhood: [], callChain: [], callers: [] });
@@ -876,7 +947,6 @@ function App() {
   }
 
   async function handleGraphNodeSelect(functionMeta) {
-    setSelectedFunction(functionMeta);
     await Promise.all([loadFunctionSource(functionMeta), loadGraph(functionMeta)]);
   }
 
