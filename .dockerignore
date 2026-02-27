@@ -1,0 +1,9 @@
+.git
+.gitignore
+node_modules
+npm-debug.log
+cp_graph.db
+cp_graph.db-shm
+cp_graph.db-wal
+docs
+front_code/node_modules

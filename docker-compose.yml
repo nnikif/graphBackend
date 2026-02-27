@@ -1,0 +1,24 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: callgraph-backend
+    environment:
+      HOST: 0.0.0.0
+      PORT: 3000
+      SQLITE_PATH: /data/cp_graph.db
+    volumes:
+      - ./cp_graph.db:/data/cp_graph.db:ro
+    ports:
+      - "3000:3000"
+
+  frontend:
+    build:
+      context: ./front_code
+      dockerfile: Dockerfile
+    container_name: callgraph-frontend
+    depends_on:
+      - backend
+    ports:
+      - "5173:5173"
