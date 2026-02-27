@@ -258,7 +258,7 @@ function App() {
   const [functions, setFunctions] = useState([]);
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [browserPath, setBrowserPath] = useState(getParentPath(DEFAULT_FILE));
+  const [browserPath, setBrowserPath] = useState("");
   const [browserEntries, setBrowserEntries] = useState([]);
   const [browserError, setBrowserError] = useState("");
   const [isBrowserLoading, setIsBrowserLoading] = useState(false);
@@ -348,7 +348,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    loadDirectory(getParentPath(DEFAULT_FILE));
+    loadDirectory("");
   }, [loadDirectory]);
 
   useEffect(() => {
