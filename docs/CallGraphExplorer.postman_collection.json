@@ -1,0 +1,228 @@
+{
+  "info": {
+    "name": "CallGraphExplorer Backend",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Requests for the Fastify backend used by Call Graph Explorer"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:3000" },
+    { "key": "query", "value": "Do" },
+    { "key": "limit", "value": "25" },
+    { "key": "filePath", "value": "adapter/pkg/client/api.go" },
+    { "key": "browsePath", "value": "adapter/pkg/client" },
+    { "key": "functionId", "value": "adapter/pkg/client::*httpAPIClient.Do@api.go:53:1" },
+    { "key": "startFunctionId", "value": "adapter/pkg/client::*httpAPIClient.Do@api.go:53:1" },
+    { "key": "endFunctionId", "value": "adapter/pkg/client::timeoutFromContext@api.go:236:1" }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "GET /health",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/health"
+          }
+        },
+        {
+          "name": "GET /health/db",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/health/db"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Queries",
+      "item": [
+        {
+          "name": "GET /queries",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/queries"
+          }
+        },
+        {
+          "name": "GET /queries?includeSql=true",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/queries?includeSql=true",
+              "host": ["{{baseUrl}}"],
+              "path": ["queries"],
+              "query": [
+                { "key": "includeSql", "value": "true" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "File Browser",
+      "item": [
+        {
+          "name": "GET /call-graph/files",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/call-graph/files"
+          }
+        },
+        {
+          "name": "GET /call-graph/files?path={{browsePath}}",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/call-graph/files?path={{browsePath}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["call-graph", "files"],
+              "query": [
+                { "key": "path", "value": "{{browsePath}}" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /call-graph/file?file={{filePath}}",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/call-graph/file?file={{filePath}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["call-graph", "file"],
+              "query": [
+                { "key": "file", "value": "{{filePath}}" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /call-graph/file-functions?file={{filePath}}",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/call-graph/file-functions?file={{filePath}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["call-graph", "file-functions"],
+              "query": [
+                { "key": "file", "value": "{{filePath}}" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Function Lookup",
+      "item": [
+        {
+          "name": "GET /call-graph/search?q={{query}}&limit={{limit}}",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/call-graph/search?q={{query}}&limit={{limit}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["call-graph", "search"],
+              "query": [
+                { "key": "q", "value": "{{query}}" },
+                { "key": "limit", "value": "{{limit}}" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /call-graph/function-detail?functionId={{functionId}}",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/call-graph/function-detail?functionId={{functionId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["call-graph", "function-detail"],
+              "query": [
+                { "key": "functionId", "value": "{{functionId}}" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /call-graph/source?functionId={{functionId}}",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/call-graph/source?functionId={{functionId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["call-graph", "source"],
+              "query": [
+                { "key": "functionId", "value": "{{functionId}}" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Call Graph",
+      "item": [
+        {
+          "name": "GET /call-graph/neighborhood?functionId={{functionId}}",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/call-graph/neighborhood?functionId={{functionId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["call-graph", "neighborhood"],
+              "query": [
+                { "key": "functionId", "value": "{{functionId}}" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /call-graph/call-chain?functionId={{functionId}}",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/call-graph/call-chain?functionId={{functionId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["call-graph", "call-chain"],
+              "query": [
+                { "key": "functionId", "value": "{{functionId}}" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /call-graph/callers?functionId={{functionId}}",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/call-graph/callers?functionId={{functionId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["call-graph", "callers"],
+              "query": [
+                { "key": "functionId", "value": "{{functionId}}" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /call-graph/path?startFunctionId={{startFunctionId}}&endFunctionId={{endFunctionId}}",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/call-graph/path?startFunctionId={{startFunctionId}}&endFunctionId={{endFunctionId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["call-graph", "path"],
+              "query": [
+                { "key": "startFunctionId", "value": "{{startFunctionId}}" },
+                { "key": "endFunctionId", "value": "{{endFunctionId}}" }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
