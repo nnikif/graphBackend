@@ -158,8 +158,99 @@ function SourceViewer({ content, functions }) {
   );
 }
 
+function getParentPath(path) {
+  if (!path) {
+    return "";
+  }
+
+  const parts = path.split("/").filter(Boolean);
+  return parts.slice(0, -1).join("/");
+}
+
+function FileBrowser({
+  currentPath,
+  entries,
+  browserError,
+  isBrowserLoading,
+  selectedFile,
+  onDirectoryOpen,
+  onFileOpen,
+}) {
+  const segments = currentPath ? currentPath.split("/").filter(Boolean) : [];
+
+  return (
+    <section className="panel browser-panel">
+      <div className="browser-toolbar">
+        <div>
+          <p className="eyebrow eyebrow--panel">Files</p>
+          <h2>Source Browser</h2>
+        </div>
+        <button
+          type="button"
+          className="ghost-button"
+          onClick={() => onDirectoryOpen(getParentPath(currentPath))}
+          disabled={!currentPath || isBrowserLoading}
+        >
+          Up
+        </button>
+      </div>
+
+      <div className="breadcrumbs">
+        <button type="button" className="breadcrumb" onClick={() => onDirectoryOpen("")}>
+          root
+        </button>
+        {segments.map((segment, index) => {
+          const path = segments.slice(0, index + 1).join("/");
+          return (
+            <React.Fragment key={path}>
+              <span className="breadcrumb-separator">/</span>
+              <button type="button" className="breadcrumb" onClick={() => onDirectoryOpen(path)}>
+                {segment}
+              </button>
+            </React.Fragment>
+          );
+        })}
+      </div>
+
+      {browserError ? <div className="browser-empty">{browserError}</div> : null}
+      {!browserError && entries.length === 0 && !isBrowserLoading ? (
+        <div className="browser-empty">No entries in this directory.</div>
+      ) : null}
+
+      <div className="browser-list">
+        {entries.map((entry) => {
+          const isSelected = entry.type === "file" && entry.path === selectedFile;
+          return (
+            <button
+              key={`${entry.type}:${entry.path}`}
+              type="button"
+              className={`browser-entry ${isSelected ? "browser-entry--selected" : ""}`}
+              onClick={() => {
+                if (entry.type === "directory") {
+                  onDirectoryOpen(entry.path);
+                } else {
+                  onFileOpen(entry.path);
+                }
+              }}
+              disabled={isBrowserLoading}
+            >
+              <span className="browser-entry__icon">
+                {entry.type === "directory" ? "dir" : "go"}
+              </span>
+              <span className="browser-entry__text">
+                <span className="browser-entry__name">{entry.name}</span>
+                <span className="browser-entry__path">{entry.path}</span>
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 function App() {
-  const [fileInput, setFileInput] = useState(DEFAULT_FILE);
+  const [selectedFile, setSelectedFile] = useState(DEFAULT_FILE);
   const [resolvedFile, setResolvedFile] = useState("No file loaded");
   const [packageName, setPackageName] = useState("-");
   const [status, setStatus] = useState("Ready");
@@ -167,6 +258,34 @@ function App() {
   const [functions, setFunctions] = useState([]);
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [browserPath, setBrowserPath] = useState(getParentPath(DEFAULT_FILE));
+  const [browserEntries, setBrowserEntries] = useState([]);
+  const [browserError, setBrowserError] = useState("");
+  const [isBrowserLoading, setIsBrowserLoading] = useState(false);
+
+  const loadDirectory = useCallback(async (path) => {
+    setIsBrowserLoading(true);
+    setBrowserError("");
+
+    try {
+      const query = path ? `?path=${encodeURIComponent(path)}` : "";
+      const response = await fetch(`${API_BASE}/call-graph/files${query}`);
+
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(`${response.status} ${response.statusText}: ${text}`);
+      }
+
+      const payload = await response.json();
+      setBrowserEntries(Array.isArray(payload.entries) ? payload.entries : []);
+      setBrowserPath(payload.path || "");
+    } catch (loadError) {
+      setBrowserEntries([]);
+      setBrowserError(String(loadError.message || loadError));
+    } finally {
+      setIsBrowserLoading(false);
+    }
+  }, []);
 
   const loadFile = useCallback(async (file) => {
     const trimmedFile = file.trim();
@@ -208,6 +327,7 @@ function App() {
 
       setContent(nextContent);
       setFunctions(Array.isArray(functionsPayload.functions) ? functionsPayload.functions : []);
+      setSelectedFile(filePayload.fileResolved || filePayload.fileRequested || trimmedFile);
       setResolvedFile(filePayload.fileResolved || filePayload.fileRequested || trimmedFile);
       setPackageName(filePayload.package || "-");
       setStatus(
@@ -228,13 +348,12 @@ function App() {
   }, []);
 
   useEffect(() => {
+    loadDirectory(getParentPath(DEFAULT_FILE));
+  }, [loadDirectory]);
+
+  useEffect(() => {
     loadFile(DEFAULT_FILE);
   }, [loadFile]);
-
-  function handleSubmit(event) {
-    event.preventDefault();
-    loadFile(fileInput);
-  }
 
   return (
     <main className="container">
@@ -248,46 +367,45 @@ function App() {
         </div>
       </header>
 
-      <section className="panel">
-        <form className="row" onSubmit={handleSubmit}>
-          <label className="field">
-            <span>Source file</span>
-            <input
-              type="text"
-              value={fileInput}
-              onChange={(event) => setFileInput(event.target.value)}
-              placeholder="e.g. prometheus/web/api/v1/openapi_examples.go"
-            />
-          </label>
-          <button type="submit" disabled={isLoading}>
-            {isLoading ? "Loading..." : "Load File"}
-          </button>
-        </form>
-        <p className="hint">Uses <code>GET /call-graph/file?file=&lt;path&gt;</code></p>
-      </section>
+      <div className="workspace">
+        <FileBrowser
+          currentPath={browserPath}
+          entries={browserEntries}
+          browserError={browserError}
+          isBrowserLoading={isBrowserLoading}
+          selectedFile={selectedFile}
+          onDirectoryOpen={loadDirectory}
+          onFileOpen={loadFile}
+        />
 
-      <section className="panel panel--meta">
-        <div>
-          <p className="meta-label">Resolved file</p>
-          <p className="meta-value">{resolvedFile}</p>
-        </div>
-        <div>
-          <p className="meta-label">Package</p>
-          <p className="meta-value">{packageName}</p>
-        </div>
-      </section>
+        <div className="viewer-column">
+          <section className="panel panel--meta">
+            <div>
+              <p className="meta-label">Resolved file</p>
+              <p className="meta-value">{resolvedFile}</p>
+            </div>
+            <div>
+              <p className="meta-label">Package</p>
+              <p className="meta-value">{packageName}</p>
+            </div>
+          </section>
 
-      <section className="panel">
-        <div className="viewer-toolbar">
-          <h2>Source</h2>
-          <p className="status">{status}</p>
+          <section className="panel">
+            <div className="viewer-toolbar">
+              <h2>Source</h2>
+              <p className="status">{isLoading ? "Loading..." : status}</p>
+            </div>
+            <p className="hint">
+              Uses <code>GET /call-graph/file</code> and <code>GET /call-graph/file-functions</code>
+            </p>
+            {error ? (
+              <div className="empty-state">{error}</div>
+            ) : (
+              <SourceViewer content={content} functions={functions} />
+            )}
+          </section>
         </div>
-        {error ? (
-          <div className="empty-state">{error}</div>
-        ) : (
-          <SourceViewer content={content} functions={functions} />
-        )}
-      </section>
+      </div>
     </main>
   );
 }
