@@ -26,6 +26,82 @@ function ensureDbConfigured(app) {
   }
 }
 
+function normalizeBrowsePath(inputPath) {
+  const normalized = String(inputPath || "")
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^\/+/, "")
+    .replace(/\/+$/, "");
+  return normalized;
+}
+
+function buildFileBrowserIndex(files) {
+  const directoryEntries = new Map();
+  const knownDirectories = new Set([""]);
+
+  function ensureDirectory(path) {
+    if (!directoryEntries.has(path)) {
+      directoryEntries.set(path, new Map());
+    }
+  }
+
+  ensureDirectory("");
+
+  for (const row of files) {
+    const filePath = normalizeBrowsePath(row.file);
+    if (!filePath) {
+      continue;
+    }
+
+    const parts = filePath.split("/").filter(Boolean);
+    let currentPath = "";
+
+    for (let i = 0; i < parts.length - 1; i += 1) {
+      const name = parts[i];
+      const parentPath = currentPath;
+      const dirPath = currentPath ? `${currentPath}/${name}` : name;
+
+      ensureDirectory(parentPath);
+      ensureDirectory(dirPath);
+
+      directoryEntries.get(parentPath).set(name, {
+        type: "directory",
+        name,
+        path: dirPath,
+      });
+
+      knownDirectories.add(dirPath);
+      currentPath = dirPath;
+    }
+
+    const fileName = parts[parts.length - 1];
+    const parentPath = currentPath;
+    ensureDirectory(parentPath);
+    directoryEntries.get(parentPath).set(fileName, {
+      type: "file",
+      name: fileName,
+      path: filePath,
+      package: row.package,
+    });
+  }
+
+  return {
+    hasDirectory: (path) => knownDirectories.has(path),
+    listDirectory: (path) => {
+      const entries = directoryEntries.get(path);
+      if (!entries) {
+        return [];
+      }
+      return Array.from(entries.values()).sort((a, b) => {
+        if (a.type !== b.type) {
+          return a.type === "directory" ? -1 : 1;
+        }
+        return a.name.localeCompare(b.name);
+      });
+    },
+  };
+}
+
 async function buildApp() {
   const app = Fastify({
     logger: {
@@ -44,6 +120,10 @@ async function buildApp() {
   app.addHook("onClose", async () => {
     app.db.close();
   });
+
+  const fileBrowserIndex = app.db.configured
+    ? buildFileBrowserIndex(app.db.listSourceFiles())
+    : null;
 
   app.get("/health", async () => {
     const dbStatus = app.db.ping();
@@ -157,6 +237,22 @@ async function buildApp() {
     };
   });
 
+  app.get("/call-graph/files", async (request) => {
+    ensureDbConfigured(app);
+
+    const browsePath = normalizeBrowsePath(request.query && request.query.path);
+    if (!fileBrowserIndex.hasDirectory(browsePath)) {
+      throw app.httpErrors.notFound(`Directory not found: ${browsePath || "/"}`);
+    }
+
+    const entries = fileBrowserIndex.listDirectory(browsePath);
+    return {
+      path: browsePath,
+      count: entries.length,
+      entries,
+    };
+  });
+
   app.get("/call-graph/neighborhood", async (request) => {
     ensureDbConfigured(app);
 
@@ -230,6 +326,7 @@ async function buildApp() {
         "/call-graph/search?q=<query>",
         "/call-graph/function-detail?functionId=<id>",
         "/call-graph/source?functionId=<id>",
+        "/call-graph/files?path=<dir>",
         "/call-graph/file-functions?file=<path>",
         "/call-graph/neighborhood?functionId=<id>",
         "/call-graph/call-chain?functionId=<id>",

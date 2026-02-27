@@ -20,6 +20,7 @@ function createDbClient(dbPathFromEnv) {
       getSourceByFile: () => null,
       resolveSourceFilePath: () => null,
       listFunctionsByFile: () => [],
+      listSourceFiles: () => [],
       close: () => {},
     };
   }
@@ -92,8 +93,14 @@ function createDbClient(dbPathFromEnv) {
       AND file = ?
     ORDER BY line, col, name
   `);
+  const listSourceFilesStatement = connection.prepare(`
+    SELECT file, package
+    FROM sources
+    ORDER BY file
+  `);
 
   const preparedQueryStatements = new Map();
+  let sourceFilesCache = null;
 
   function normalizeFilePath(filePath) {
     return String(filePath || "").trim().replace(/\\/g, "/");
@@ -191,6 +198,12 @@ function createDbClient(dbPathFromEnv) {
         return [];
       }
       return listFunctionsByFileStatement.all(resolvedFilePath);
+    },
+    listSourceFiles: () => {
+      if (!sourceFilesCache) {
+        sourceFilesCache = listSourceFilesStatement.all();
+      }
+      return sourceFilesCache;
     },
     close: () => {
       connection.close();
