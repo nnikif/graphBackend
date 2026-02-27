@@ -142,6 +142,21 @@ async function buildApp() {
     };
   });
 
+  app.get("/call-graph/file-functions", async (request) => {
+    ensureDbConfigured(app);
+
+    const file = requireStringQueryParam(request, app, "file");
+    const resolvedFile = app.db.resolveSourceFilePath(file);
+    const functions = app.db.listFunctionsByFile(file);
+
+    return {
+      fileRequested: file,
+      fileResolved: resolvedFile,
+      count: functions.length,
+      functions,
+    };
+  });
+
   app.get("/call-graph/neighborhood", async (request) => {
     ensureDbConfigured(app);
 
@@ -215,6 +230,7 @@ async function buildApp() {
         "/call-graph/search?q=<query>",
         "/call-graph/function-detail?functionId=<id>",
         "/call-graph/source?functionId=<id>",
+        "/call-graph/file-functions?file=<path>",
         "/call-graph/neighborhood?functionId=<id>",
         "/call-graph/call-chain?functionId=<id>",
         "/call-graph/callers?functionId=<id>",

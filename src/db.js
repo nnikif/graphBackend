@@ -18,6 +18,8 @@ function createDbClient(dbPathFromEnv) {
       runQueryByName: () => [],
       getFunctionDetail: () => null,
       getSourceByFile: () => null,
+      resolveSourceFilePath: () => null,
+      listFunctionsByFile: () => [],
       close: () => {},
     };
   }
@@ -64,8 +66,79 @@ function createDbClient(dbPathFromEnv) {
     FROM sources
     WHERE file = ?
   `);
+  const sourceFileExistsStatement = connection.prepare(`
+    SELECT file
+    FROM sources
+    WHERE file = ?
+    LIMIT 1
+  `);
+  const findSourceFilesBySuffixStatement = connection.prepare(`
+    SELECT file
+    FROM sources
+    WHERE file LIKE ?
+    LIMIT 2
+  `);
+  const listFunctionsByFileStatement = connection.prepare(`
+    SELECT
+      id AS function_id,
+      name,
+      package,
+      file,
+      line,
+      end_line,
+      parent_function
+    FROM nodes
+    WHERE kind = 'function'
+      AND file = ?
+    ORDER BY line, col, name
+  `);
 
   const preparedQueryStatements = new Map();
+
+  function normalizeFilePath(filePath) {
+    return String(filePath || "").trim().replace(/\\/g, "/");
+  }
+
+  function resolveSourceFilePath(filePath) {
+    const normalized = normalizeFilePath(filePath);
+    if (!normalized) {
+      return null;
+    }
+
+    const candidates = [
+      normalized,
+      normalized.replace(/^\.\//, ""),
+      normalized.replace(/^\/+/, ""),
+    ];
+
+    const seen = new Set();
+    for (const candidate of candidates) {
+      if (!candidate || seen.has(candidate)) {
+        continue;
+      }
+      seen.add(candidate);
+
+      const row = sourceFileExistsStatement.get(candidate);
+      if (row && row.file) {
+        return row.file;
+      }
+    }
+
+    const parts = normalized.split("/").filter(Boolean);
+    for (let start = 0; start < parts.length; start += 1) {
+      const suffix = parts.slice(start).join("/");
+      if (suffix.length < 8) {
+        continue;
+      }
+
+      const matches = findSourceFilesBySuffixStatement.all(`%${suffix}`);
+      if (matches.length === 1) {
+        return matches[0].file;
+      }
+    }
+
+    return null;
+  }
 
   function getPreparedQueryByName(queryName) {
     if (!preparedQueryStatements.has(queryName)) {
@@ -108,6 +181,16 @@ function createDbClient(dbPathFromEnv) {
     },
     getSourceByFile: (filePath) => {
       return getSourceByFileStatement.get(filePath) || null;
+    },
+    resolveSourceFilePath: (filePath) => {
+      return resolveSourceFilePath(filePath);
+    },
+    listFunctionsByFile: (filePath) => {
+      const resolvedFilePath = resolveSourceFilePath(filePath);
+      if (!resolvedFilePath) {
+        return [];
+      }
+      return listFunctionsByFileStatement.all(resolvedFilePath);
     },
     close: () => {
       connection.close();
