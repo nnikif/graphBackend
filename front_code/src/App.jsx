@@ -244,8 +244,10 @@ function SourceViewer({
   content,
   functions,
   selectedFunctionId,
+  selectedLine,
   onFunctionClick,
 }) {
+  const containerRef = useRef(null);
   const lines = useMemo(() => content.split("\n"), [content]);
   const functionsByLine = useMemo(() => {
     const nextMap = new Map();
@@ -259,8 +261,24 @@ function SourceViewer({
     return nextMap;
   }, [functions]);
 
+  useEffect(() => {
+    if (!containerRef.current || !selectedLine) {
+      return;
+    }
+
+    const targetLine = containerRef.current.querySelector(`[data-line="${selectedLine}"]`);
+    if (!targetLine) {
+      return;
+    }
+
+    targetLine.scrollIntoView({
+      block: "center",
+      behavior: "smooth",
+    });
+  }, [selectedLine, content]);
+
   return (
-    <div className="source-viewer" aria-live="polite">
+    <div ref={containerRef} className="source-viewer" aria-live="polite">
       {lines.map((line, index) => {
         const lineFunctions = functionsByLine.get(index + 1) || [];
         const isSelected = lineFunctions.some((fn) => fn.function_id === selectedFunctionId);
@@ -637,23 +655,25 @@ function App() {
 
       {mode === "browse" ? (
         <section className="panel source-panel source-panel--browse">
+          <p className="section-label">Source</p>
           <div className="file-strip">
             <span className="meta-pill">{resolvedFile}</span>
             <span className="meta-pill meta-pill--muted">{packageName}</span>
           </div>
-          {sourceError ? (
-            <div className="empty-state">{sourceError}</div>
-          ) : isSourceLoading ? (
-            <div className="empty-state">Loading source...</div>
-          ) : (
-            <SourceViewer
-              content={content}
-              functions={functions}
-              selectedFunctionId={selectedFunction?.function_id || null}
-              onFunctionClick={handleFunctionClick}
-            />
-          )}
-        </section>
+        {sourceError ? (
+          <div className="empty-state">{sourceError}</div>
+        ) : isSourceLoading ? (
+          <div className="empty-state">Loading source...</div>
+        ) : (
+          <SourceViewer
+            content={content}
+            functions={functions}
+            selectedFunctionId={selectedFunction?.function_id || null}
+            selectedLine={selectedFunction?.line || null}
+            onFunctionClick={handleFunctionClick}
+          />
+        )}
+      </section>
       ) : (
         <section className="graph-mode">
           <GraphPanel
@@ -665,6 +685,7 @@ function App() {
             error={graphError}
           />
           <section className="panel source-panel source-panel--graph">
+            <p className="section-label">Source</p>
             <div className="file-strip">
               <span className="meta-pill">{resolvedFile}</span>
               <span className="meta-pill meta-pill--muted">{packageName}</span>
@@ -678,6 +699,7 @@ function App() {
                 content={content}
                 functions={functions}
                 selectedFunctionId={selectedFunction?.function_id || null}
+                selectedLine={selectedFunction?.line || null}
                 onFunctionClick={handleFunctionClick}
               />
             )}
