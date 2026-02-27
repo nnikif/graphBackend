@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import cytoscape from "cytoscape";
 
 const DEFAULT_FILE = "prometheus/web/api/v1/openapi_examples.go";
 const API_BASE =
@@ -54,6 +55,26 @@ const GO_BUILTINS = new Set([
   "true",
 ]);
 
+function requestJson(path) {
+  return fetch(`${API_BASE}${path}`).then(async (response) => {
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`${response.status} ${response.statusText}: ${text}`);
+    }
+
+    return response.json();
+  });
+}
+
+function getParentPath(path) {
+  if (!path) {
+    return "";
+  }
+
+  const parts = path.split("/").filter(Boolean);
+  return parts.slice(0, -1).join("/");
+}
+
 function escapeHtml(value) {
   return String(value)
     .replaceAll("&", "&amp;")
@@ -61,7 +82,7 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;");
 }
 
-function highlightGoLine(line) {
+function highlightGoHtml(line) {
   const escaped = escapeHtml(line);
   const tokenPattern =
     /("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`[^`]*`|\/\/.*|\b\d+(?:\.\d+)?\b|\b[A-Za-z_][A-Za-z0-9_]*\b)/g;
@@ -86,14 +107,12 @@ function highlightGoLine(line) {
   });
 }
 
-function buildFunctionMarkup(line, functionsOnLine) {
+function findFunctionMatches(line, functionsOnLine) {
   if (!functionsOnLine || functionsOnLine.length === 0) {
-    return highlightGoLine(line);
+    return [];
   }
 
-  let cursor = 0;
-  let html = "";
-  const matches = functionsOnLine
+  return functionsOnLine
     .map((fn) => {
       const start = line.indexOf(fn.name);
       if (start === -1) {
@@ -101,41 +120,140 @@ function buildFunctionMarkup(line, functionsOnLine) {
       }
 
       return {
-        name: fn.name,
+        ...fn,
         start,
         end: start + fn.name.length,
       };
     })
     .filter(Boolean)
-    .sort((left, right) => left.start - right.start);
+    .sort((left, right) => left.start - right.start)
+    .filter((match, index, all) => {
+      if (index === 0) {
+        return true;
+      }
 
-  if (matches.length === 0) {
-    return highlightGoLine(line);
+      return match.start >= all[index - 1].end;
+    });
+}
+
+function buildGraphElements(selectedFunction, graphNodes) {
+  if (!selectedFunction) {
+    return [];
   }
 
+  const nodeMap = new Map();
+  const edgeList = [];
+
+  nodeMap.set(selectedFunction.function_id, {
+    data: {
+      id: selectedFunction.function_id,
+      label: selectedFunction.name,
+      file: selectedFunction.file,
+      line: selectedFunction.line,
+      package: selectedFunction.package,
+    },
+    classes: "focus",
+  });
+
+  for (const node of graphNodes) {
+    nodeMap.set(node.id, {
+      data: {
+        id: node.id,
+        label: node.name,
+        file: node.file,
+        line: node.line,
+        package: node.package,
+      },
+      classes: node.direction,
+    });
+
+    edgeList.push({
+      data: {
+        id: `${selectedFunction.function_id}:${node.direction}:${node.id}`,
+        source: node.direction === "caller" ? node.id : selectedFunction.function_id,
+        target: node.direction === "caller" ? selectedFunction.function_id : node.id,
+      },
+      classes: node.direction,
+    });
+  }
+
+  return [...nodeMap.values(), ...edgeList];
+}
+
+function CodeSegment({ html }) {
+  if (!html) {
+    return <span>&nbsp;</span>;
+  }
+
+  return <span dangerouslySetInnerHTML={{ __html: html }} />;
+}
+
+function FunctionLine({
+  line,
+  functionsOnLine,
+  selectedFunctionId,
+  onFunctionClick,
+}) {
+  const matches = useMemo(() => findFunctionMatches(line, functionsOnLine), [line, functionsOnLine]);
+
+  if (matches.length === 0) {
+    return <CodeSegment html={highlightGoHtml(line)} />;
+  }
+
+  const pieces = [];
+  let cursor = 0;
+
   for (const match of matches) {
-    if (match.start < cursor) {
-      continue;
+    if (match.start > cursor) {
+      pieces.push(
+        <CodeSegment
+          key={`text:${cursor}:${match.start}`}
+          html={highlightGoHtml(line.slice(cursor, match.start))}
+        />,
+      );
     }
 
-    html += highlightGoLine(line.slice(cursor, match.start));
-    html += `<span class="tok-function-name">${escapeHtml(match.name)}</span>`;
+    pieces.push(
+      <button
+        key={match.function_id}
+        type="button"
+        className={`function-chip ${
+          selectedFunctionId === match.function_id ? "function-chip--selected" : ""
+        }`}
+        onClick={() => onFunctionClick(match)}
+      >
+        {match.name}
+      </button>,
+    );
     cursor = match.end;
   }
 
-  html += highlightGoLine(line.slice(cursor));
-  return html;
+  if (cursor < line.length) {
+    pieces.push(
+      <CodeSegment
+        key={`text:${cursor}:end`}
+        html={highlightGoHtml(line.slice(cursor))}
+      />,
+    );
+  }
+
+  return pieces;
 }
 
-function SourceViewer({ content, functions }) {
+function SourceViewer({
+  content,
+  functions,
+  selectedFunctionId,
+  onFunctionClick,
+}) {
   const lines = useMemo(() => content.split("\n"), [content]);
   const functionsByLine = useMemo(() => {
     const nextMap = new Map();
 
     for (const fn of functions) {
-      const lineFunctions = nextMap.get(fn.line) || [];
-      lineFunctions.push(fn);
-      nextMap.set(fn.line, lineFunctions);
+      const current = nextMap.get(fn.line) || [];
+      current.push(fn);
+      nextMap.set(fn.line, current);
     }
 
     return nextMap;
@@ -143,35 +261,36 @@ function SourceViewer({ content, functions }) {
 
   return (
     <div className="source-viewer" aria-live="polite">
-      {lines.map((line, index) => (
-        <div key={index + 1} className="source-line" data-line={index + 1}>
-          <span className="line-number">{index + 1}</span>
-          <code
-            className="line-code"
-            dangerouslySetInnerHTML={{
-              __html: buildFunctionMarkup(line, functionsByLine.get(index + 1)) || "&nbsp;",
-            }}
-          />
-        </div>
-      ))}
+      {lines.map((line, index) => {
+        const lineFunctions = functionsByLine.get(index + 1) || [];
+        const isSelected = lineFunctions.some((fn) => fn.function_id === selectedFunctionId);
+
+        return (
+          <div
+            key={index + 1}
+            className={`source-line ${isSelected ? "source-line--selected" : ""}`}
+            data-line={index + 1}
+          >
+            <span className="line-number">{index + 1}</span>
+            <code className="line-code">
+              <FunctionLine
+                line={line}
+                functionsOnLine={lineFunctions}
+                selectedFunctionId={selectedFunctionId}
+                onFunctionClick={onFunctionClick}
+              />
+            </code>
+          </div>
+        );
+      })}
     </div>
   );
-}
-
-function getParentPath(path) {
-  if (!path) {
-    return "";
-  }
-
-  const parts = path.split("/").filter(Boolean);
-  return parts.slice(0, -1).join("/");
 }
 
 function FileBrowser({
   currentPath,
   entries,
-  browserError,
-  isBrowserLoading,
+  isLoading,
   selectedFile,
   onDirectoryOpen,
   onFileOpen,
@@ -180,44 +299,34 @@ function FileBrowser({
 
   return (
     <section className="panel browser-panel">
-      <div className="browser-toolbar">
-        <div>
-          <p className="eyebrow eyebrow--panel">Files</p>
-          <h2>Source Browser</h2>
+      <div className="browser-topbar">
+        <div className="breadcrumbs">
+          <button type="button" className="breadcrumb" onClick={() => onDirectoryOpen("")}>
+            root
+          </button>
+          {segments.map((segment, index) => {
+            const path = segments.slice(0, index + 1).join("/");
+            return (
+              <React.Fragment key={path}>
+                <span className="breadcrumb-separator">/</span>
+                <button type="button" className="breadcrumb" onClick={() => onDirectoryOpen(path)}>
+                  {segment}
+                </button>
+              </React.Fragment>
+            );
+          })}
         </div>
         <button
           type="button"
           className="ghost-button"
           onClick={() => onDirectoryOpen(getParentPath(currentPath))}
-          disabled={!currentPath || isBrowserLoading}
+          disabled={!currentPath || isLoading}
         >
           Up
         </button>
       </div>
 
-      <div className="breadcrumbs">
-        <button type="button" className="breadcrumb" onClick={() => onDirectoryOpen("")}>
-          root
-        </button>
-        {segments.map((segment, index) => {
-          const path = segments.slice(0, index + 1).join("/");
-          return (
-            <React.Fragment key={path}>
-              <span className="breadcrumb-separator">/</span>
-              <button type="button" className="breadcrumb" onClick={() => onDirectoryOpen(path)}>
-                {segment}
-              </button>
-            </React.Fragment>
-          );
-        })}
-      </div>
-
-      {browserError ? <div className="browser-empty">{browserError}</div> : null}
-      {!browserError && entries.length === 0 && !isBrowserLoading ? (
-        <div className="browser-empty">No entries in this directory.</div>
-      ) : null}
-
-      <div className="browser-list">
+      <div className="browser-grid">
         {entries.map((entry) => {
           const isSelected = entry.type === "file" && entry.path === selectedFile;
           return (
@@ -229,18 +338,15 @@ function FileBrowser({
                 if (entry.type === "directory") {
                   onDirectoryOpen(entry.path);
                 } else {
-                  onFileOpen(entry.path);
+                  onFileOpen(entry.path, { mode: "browse" });
                 }
               }}
-              disabled={isBrowserLoading}
+              disabled={isLoading}
             >
               <span className="browser-entry__icon">
                 {entry.type === "directory" ? "dir" : "go"}
               </span>
-              <span className="browser-entry__text">
-                <span className="browser-entry__name">{entry.name}</span>
-                <span className="browser-entry__path">{entry.path}</span>
-              </span>
+              <span className="browser-entry__name">{entry.name}</span>
             </button>
           );
         })}
@@ -249,163 +355,335 @@ function FileBrowser({
   );
 }
 
+function GraphPanel({
+  elements,
+  selectedFunction,
+  onNodeSelect,
+  onBack,
+  isLoading,
+  error,
+}) {
+  const containerRef = useRef(null);
+
+  useEffect(() => {
+    if (!containerRef.current || !selectedFunction) {
+      return undefined;
+    }
+
+    const cy = cytoscape({
+      container: containerRef.current,
+      elements,
+      layout: {
+        name: "breadthfirst",
+        directed: true,
+        padding: 30,
+        spacingFactor: 1.2,
+      },
+      style: [
+        {
+          selector: "node",
+          style: {
+            label: "data(label)",
+            "background-color": "#d6d3c9",
+            color: "#101828",
+            "font-size": 11,
+            "text-valign": "center",
+            "text-halign": "center",
+            "text-wrap": "wrap",
+            "text-max-width": 90,
+            width: 52,
+            height: 52,
+            "border-width": 2,
+            "border-color": "#63574a",
+          },
+        },
+        {
+          selector: "node.focus",
+          style: {
+            "background-color": "#0f766e",
+            color: "#f8fafc",
+            "border-color": "#134e4a",
+            width: 68,
+            height: 68,
+            "font-size": 12,
+            "font-weight": 700,
+          },
+        },
+        {
+          selector: "node.caller",
+          style: {
+            "background-color": "#fde68a",
+            "border-color": "#d97706",
+          },
+        },
+        {
+          selector: "node.callee",
+          style: {
+            "background-color": "#bfdbfe",
+            "border-color": "#2563eb",
+          },
+        },
+        {
+          selector: "edge",
+          style: {
+            width: 2.4,
+            "curve-style": "bezier",
+            "target-arrow-shape": "triangle",
+            "line-color": "#6b7280",
+            "target-arrow-color": "#6b7280",
+          },
+        },
+        {
+          selector: "edge.caller",
+          style: {
+            "line-color": "#d97706",
+            "target-arrow-color": "#d97706",
+          },
+        },
+        {
+          selector: "edge.callee",
+          style: {
+            "line-color": "#2563eb",
+            "target-arrow-color": "#2563eb",
+          },
+        },
+      ],
+    });
+
+    cy.on("tap", "node", (event) => {
+      const data = event.target.data();
+      onNodeSelect({
+        function_id: data.id,
+        name: data.label,
+        file: data.file,
+        line: data.line,
+        package: data.package,
+      });
+    });
+
+    return () => {
+      cy.destroy();
+    };
+  }, [elements, onNodeSelect, selectedFunction]);
+
+  return (
+    <section className="panel graph-panel">
+      <div className="graph-topbar">
+        <button type="button" className="ghost-button" onClick={onBack}>
+          Back
+        </button>
+        <div className="graph-meta">
+          <span className="meta-pill">{selectedFunction?.name || "-"}</span>
+          <span className="meta-pill meta-pill--muted">{selectedFunction?.package || "-"}</span>
+        </div>
+      </div>
+      {error ? <div className="graph-empty">{error}</div> : null}
+      {!error && isLoading ? <div className="graph-empty">Loading graph...</div> : null}
+      {!error && !isLoading ? <div ref={containerRef} className="graph-canvas" /> : null}
+    </section>
+  );
+}
+
 function App() {
+  const [mode, setMode] = useState("browse");
   const [selectedFile, setSelectedFile] = useState(DEFAULT_FILE);
   const [resolvedFile, setResolvedFile] = useState("No file loaded");
   const [packageName, setPackageName] = useState("-");
-  const [status, setStatus] = useState("Ready");
   const [content, setContent] = useState("");
   const [functions, setFunctions] = useState([]);
-  const [error, setError] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
   const [browserPath, setBrowserPath] = useState("");
   const [browserEntries, setBrowserEntries] = useState([]);
-  const [browserError, setBrowserError] = useState("");
   const [isBrowserLoading, setIsBrowserLoading] = useState(false);
+  const [isSourceLoading, setIsSourceLoading] = useState(false);
+  const [isGraphLoading, setIsGraphLoading] = useState(false);
+  const [sourceError, setSourceError] = useState("");
+  const [graphError, setGraphError] = useState("");
+  const [selectedFunction, setSelectedFunction] = useState(null);
+  const [graphNodes, setGraphNodes] = useState([]);
+
+  const graphElements = useMemo(
+    () => buildGraphElements(selectedFunction, graphNodes),
+    [graphNodes, selectedFunction],
+  );
 
   const loadDirectory = useCallback(async (path) => {
     setIsBrowserLoading(true);
-    setBrowserError("");
 
     try {
       const query = path ? `?path=${encodeURIComponent(path)}` : "";
-      const response = await fetch(`${API_BASE}/call-graph/files${query}`);
-
-      if (!response.ok) {
-        const text = await response.text();
-        throw new Error(`${response.status} ${response.statusText}: ${text}`);
-      }
-
-      const payload = await response.json();
+      const payload = await requestJson(`/call-graph/files${query}`);
       setBrowserEntries(Array.isArray(payload.entries) ? payload.entries : []);
       setBrowserPath(payload.path || "");
-    } catch (loadError) {
-      setBrowserEntries([]);
-      setBrowserError(String(loadError.message || loadError));
     } finally {
       setIsBrowserLoading(false);
     }
   }, []);
 
-  const loadFile = useCallback(async (file) => {
+  const loadFile = useCallback(async (file, options = {}) => {
     const trimmedFile = file.trim();
     if (!trimmedFile) {
-      setError("Enter a file path to load.");
-      setContent("");
-      setFunctions([]);
-      setResolvedFile("No file loaded");
-      setPackageName("-");
-      setStatus("Error");
       return;
     }
 
-    setIsLoading(true);
-    setError("");
-    setStatus("Loading...");
+    setIsSourceLoading(true);
+    setSourceError("");
 
     try {
-      const [fileResponse, functionsResponse] = await Promise.all([
-        fetch(`${API_BASE}/call-graph/file?file=${encodeURIComponent(trimmedFile)}`),
-        fetch(`${API_BASE}/call-graph/file-functions?file=${encodeURIComponent(trimmedFile)}`),
-      ]);
-
-      if (!fileResponse.ok) {
-        const text = await fileResponse.text();
-        throw new Error(`${fileResponse.status} ${fileResponse.statusText}: ${text}`);
-      }
-
-      if (!functionsResponse.ok) {
-        const text = await functionsResponse.text();
-        throw new Error(`${functionsResponse.status} ${functionsResponse.statusText}: ${text}`);
-      }
-
       const [filePayload, functionsPayload] = await Promise.all([
-        fileResponse.json(),
-        functionsResponse.json(),
+        requestJson(`/call-graph/file?file=${encodeURIComponent(trimmedFile)}`),
+        requestJson(`/call-graph/file-functions?file=${encodeURIComponent(trimmedFile)}`),
       ]);
-      const nextContent = filePayload.content || "";
 
-      setContent(nextContent);
-      setFunctions(Array.isArray(functionsPayload.functions) ? functionsPayload.functions : []);
-      setSelectedFile(filePayload.fileResolved || filePayload.fileRequested || trimmedFile);
-      setResolvedFile(filePayload.fileResolved || filePayload.fileRequested || trimmedFile);
+      const nextResolvedFile = filePayload.fileResolved || filePayload.fileRequested || trimmedFile;
+      setSelectedFile(nextResolvedFile);
+      setResolvedFile(nextResolvedFile);
       setPackageName(filePayload.package || "-");
-      setStatus(
-        `${nextContent.split("\n").length} lines, ${
-          Array.isArray(functionsPayload.functions) ? functionsPayload.functions.length : 0
-        } functions`,
-      );
-    } catch (loadError) {
+      setContent(filePayload.content || "");
+      setFunctions(Array.isArray(functionsPayload.functions) ? functionsPayload.functions : []);
+
+      if (options.mode) {
+        setMode(options.mode);
+      }
+
+      if (options.clearGraph) {
+        setSelectedFunction(null);
+        setGraphNodes([]);
+        setGraphError("");
+      }
+    } catch (error) {
       setContent("");
       setFunctions([]);
-      setResolvedFile("Load failed");
-      setPackageName("-");
-      setError(String(loadError.message || loadError));
-      setStatus("Error");
+      setSourceError(String(error.message || error));
     } finally {
-      setIsLoading(false);
+      setIsSourceLoading(false);
+    }
+  }, []);
+
+  const loadFunctionSource = useCallback(async (functionMeta) => {
+    setIsSourceLoading(true);
+    setSourceError("");
+
+    try {
+      const sourcePayload = await requestJson(
+        `/call-graph/source?functionId=${encodeURIComponent(functionMeta.function_id)}`,
+      );
+      const functionsPayload = await requestJson(
+        `/call-graph/file-functions?file=${encodeURIComponent(sourcePayload.file)}`,
+      );
+
+      setSelectedFile(sourcePayload.file);
+      setResolvedFile(sourcePayload.file);
+      setPackageName(sourcePayload.package || "-");
+      setContent(sourcePayload.content || "");
+      setFunctions(Array.isArray(functionsPayload.functions) ? functionsPayload.functions : []);
+      await loadDirectory(getParentPath(sourcePayload.file));
+    } catch (error) {
+      setSourceError(String(error.message || error));
+    } finally {
+      setIsSourceLoading(false);
+    }
+  }, [loadDirectory]);
+
+  const loadGraph = useCallback(async (functionMeta) => {
+    setIsGraphLoading(true);
+    setGraphError("");
+
+    try {
+      const payload = await requestJson(
+        `/call-graph/neighborhood?functionId=${encodeURIComponent(functionMeta.function_id)}`,
+      );
+      setGraphNodes(Array.isArray(payload.nodes) ? payload.nodes : []);
+    } catch (error) {
+      setGraphNodes([]);
+      setGraphError(String(error.message || error));
+    } finally {
+      setIsGraphLoading(false);
     }
   }, []);
 
   useEffect(() => {
     loadDirectory("");
-  }, [loadDirectory]);
+    loadFile(DEFAULT_FILE, { mode: "browse", clearGraph: true });
+  }, [loadDirectory, loadFile]);
 
-  useEffect(() => {
-    loadFile(DEFAULT_FILE);
-  }, [loadFile]);
+  async function handleFunctionClick(functionMeta) {
+    setSelectedFunction(functionMeta);
+    setMode("graph");
+    await loadGraph(functionMeta);
+  }
+
+  async function handleGraphNodeSelect(functionMeta) {
+    setSelectedFunction(functionMeta);
+    await Promise.all([loadFunctionSource(functionMeta), loadGraph(functionMeta)]);
+  }
+
+  function handleBackToBrowse() {
+    setMode("browse");
+    setSelectedFunction(null);
+    setGraphNodes([]);
+    setGraphError("");
+  }
 
   return (
-    <main className="container">
-      <header className="hero">
-        <div>
-          <p className="eyebrow">CallGraphExplorer</p>
-          <h1>Go Source Viewer</h1>
-          <p className="subtitle">
-            Render a source file from the backend with line numbers and syntax highlighting.
-          </p>
-        </div>
-      </header>
+    <main className="app-shell">
+      <FileBrowser
+        currentPath={browserPath}
+        entries={browserEntries}
+        isLoading={isBrowserLoading || isSourceLoading}
+        selectedFile={selectedFile}
+        onDirectoryOpen={loadDirectory}
+        onFileOpen={(file, options) => loadFile(file, { ...options, clearGraph: true })}
+      />
 
-      <div className="workspace">
-        <FileBrowser
-          currentPath={browserPath}
-          entries={browserEntries}
-          browserError={browserError}
-          isBrowserLoading={isBrowserLoading}
-          selectedFile={selectedFile}
-          onDirectoryOpen={loadDirectory}
-          onFileOpen={loadFile}
-        />
-
-        <div className="viewer-column">
-          <section className="panel panel--meta">
-            <div>
-              <p className="meta-label">Resolved file</p>
-              <p className="meta-value">{resolvedFile}</p>
+      {mode === "browse" ? (
+        <section className="panel source-panel source-panel--browse">
+          <div className="file-strip">
+            <span className="meta-pill">{resolvedFile}</span>
+            <span className="meta-pill meta-pill--muted">{packageName}</span>
+          </div>
+          {sourceError ? (
+            <div className="empty-state">{sourceError}</div>
+          ) : isSourceLoading ? (
+            <div className="empty-state">Loading source...</div>
+          ) : (
+            <SourceViewer
+              content={content}
+              functions={functions}
+              selectedFunctionId={selectedFunction?.function_id || null}
+              onFunctionClick={handleFunctionClick}
+            />
+          )}
+        </section>
+      ) : (
+        <section className="graph-mode">
+          <GraphPanel
+            elements={graphElements}
+            selectedFunction={selectedFunction}
+            onNodeSelect={handleGraphNodeSelect}
+            onBack={handleBackToBrowse}
+            isLoading={isGraphLoading}
+            error={graphError}
+          />
+          <section className="panel source-panel source-panel--graph">
+            <div className="file-strip">
+              <span className="meta-pill">{resolvedFile}</span>
+              <span className="meta-pill meta-pill--muted">{packageName}</span>
             </div>
-            <div>
-              <p className="meta-label">Package</p>
-              <p className="meta-value">{packageName}</p>
-            </div>
-          </section>
-
-          <section className="panel">
-            <div className="viewer-toolbar">
-              <h2>Source</h2>
-              <p className="status">{isLoading ? "Loading..." : status}</p>
-            </div>
-            <p className="hint">
-              Uses <code>GET /call-graph/file</code> and <code>GET /call-graph/file-functions</code>
-            </p>
-            {error ? (
-              <div className="empty-state">{error}</div>
+            {sourceError ? (
+              <div className="empty-state">{sourceError}</div>
+            ) : isSourceLoading ? (
+              <div className="empty-state">Loading source...</div>
             ) : (
-              <SourceViewer content={content} functions={functions} />
+              <SourceViewer
+                content={content}
+                functions={functions}
+                selectedFunctionId={selectedFunction?.function_id || null}
+                onFunctionClick={handleFunctionClick}
+              />
             )}
           </section>
-        </div>
-      </div>
+        </section>
+      )}
     </main>
   );
 }
