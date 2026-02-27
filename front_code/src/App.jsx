@@ -219,10 +219,28 @@ function takeMeaningfulNodes(nodes, budget, selectedFunction) {
     .slice(0, budget);
 }
 
+function isAllowedGraphNode(node) {
+  if (!node || !node.id) {
+    return false;
+  }
+
+  if (!node.file) {
+    return true;
+  }
+
+  return String(node.file).toLowerCase().endsWith(".go");
+}
+
 function selectGraphData(graphData, graphView, selectedFunction) {
-  const neighborhood = Array.isArray(graphData.neighborhood) ? graphData.neighborhood : [];
-  const callChain = Array.isArray(graphData.callChain) ? graphData.callChain : [];
-  const callers = Array.isArray(graphData.callers) ? graphData.callers : [];
+  const neighborhood = (Array.isArray(graphData.neighborhood) ? graphData.neighborhood : []).filter(
+    isAllowedGraphNode,
+  );
+  const callChain = (Array.isArray(graphData.callChain) ? graphData.callChain : []).filter(
+    isAllowedGraphNode,
+  );
+  const callers = (Array.isArray(graphData.callers) ? graphData.callers : []).filter(
+    isAllowedGraphNode,
+  );
 
   if (graphView === "neighbors") {
     return {
