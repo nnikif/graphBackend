@@ -136,45 +136,152 @@ function findFunctionMatches(line, functionsOnLine) {
     });
 }
 
-function buildGraphElements(selectedFunction, graphNodes) {
+function buildGraphElements(selectedFunction, graphData) {
   if (!selectedFunction) {
     return [];
   }
 
   const nodeMap = new Map();
   const edgeList = [];
+  const { neighborhood = [], callChain = [], callers = [] } = graphData || {};
 
-  nodeMap.set(selectedFunction.function_id, {
-    data: {
+  function upsertNode(id, nextData, classes = []) {
+    const existing = nodeMap.get(id);
+    if (!existing) {
+      nodeMap.set(id, {
+        data: nextData,
+        classes: Array.from(new Set(classes)).join(" "),
+      });
+      return;
+    }
+
+    existing.data = { ...existing.data, ...nextData };
+    existing.classes = Array.from(
+      new Set(`${existing.classes} ${classes.join(" ")}`.trim().split(/\s+/).filter(Boolean)),
+    ).join(" ");
+  }
+
+  upsertNode(
+    selectedFunction.function_id,
+    {
       id: selectedFunction.function_id,
       label: selectedFunction.name,
       file: selectedFunction.file,
       line: selectedFunction.line,
       package: selectedFunction.package,
+      relation: "focus",
+      depth: 0,
     },
-    classes: "focus",
-  });
+    ["focus"],
+  );
 
-  for (const node of graphNodes) {
-    nodeMap.set(node.id, {
-      data: {
+  for (const node of neighborhood) {
+    upsertNode(
+      node.id,
+      {
         id: node.id,
         label: node.name,
         file: node.file,
         line: node.line,
         package: node.package,
+        relation: node.direction,
+        depth: 1,
       },
-      classes: node.direction,
-    });
+      [node.direction, "direct"],
+    );
 
     edgeList.push({
       data: {
-        id: `${selectedFunction.function_id}:${node.direction}:${node.id}`,
+        id: `${selectedFunction.function_id}:direct:${node.direction}:${node.id}`,
         source: node.direction === "caller" ? node.id : selectedFunction.function_id,
         target: node.direction === "caller" ? selectedFunction.function_id : node.id,
       },
-      classes: node.direction,
+      classes: `${node.direction} direct`,
     });
+  }
+
+  const callerDepths = new Map();
+  for (const node of callers) {
+    if (node.id === selectedFunction.function_id) {
+      continue;
+    }
+    const depth = Number(node.depth || 0);
+    const enrichedNode = {
+      id: node.id,
+      label: node.name,
+      file: node.file || null,
+      line: node.line || null,
+      package: node.package,
+      relation: "caller",
+      depth,
+    };
+    upsertNode(node.id, enrichedNode, ["caller", "transitive", `depth-${depth}`]);
+
+    const bucket = callerDepths.get(depth) || [];
+    bucket.push(enrichedNode);
+    callerDepths.set(depth, bucket);
+  }
+
+  const calleeDepths = new Map();
+  for (const node of callChain) {
+    if (node.id === selectedFunction.function_id) {
+      continue;
+    }
+    const depth = Number(node.depth || 0);
+    const enrichedNode = {
+      id: node.id,
+      label: node.name,
+      file: node.file || null,
+      line: node.line || null,
+      package: node.package,
+      relation: "callee",
+      depth,
+    };
+    upsertNode(node.id, enrichedNode, ["callee", "transitive", `depth-${depth}`]);
+
+    const bucket = calleeDepths.get(depth) || [];
+    bucket.push(enrichedNode);
+    calleeDepths.set(depth, bucket);
+  }
+
+  for (const [depth, nodes] of callerDepths.entries()) {
+    const previousNodes =
+      depth === 1
+        ? [{ id: selectedFunction.function_id }]
+        : callerDepths.get(depth - 1) || [{ id: selectedFunction.function_id }];
+
+    for (const node of nodes) {
+      for (const previousNode of previousNodes) {
+        edgeList.push({
+          data: {
+            id: `caller:${depth}:${previousNode.id}:${node.id}`,
+            source: node.id,
+            target: previousNode.id,
+          },
+          classes: depth === 1 ? "caller direct" : "caller transitive",
+        });
+      }
+    }
+  }
+
+  for (const [depth, nodes] of calleeDepths.entries()) {
+    const previousNodes =
+      depth === 1
+        ? [{ id: selectedFunction.function_id }]
+        : calleeDepths.get(depth - 1) || [{ id: selectedFunction.function_id }];
+
+    for (const node of nodes) {
+      for (const previousNode of previousNodes) {
+        edgeList.push({
+          data: {
+            id: `callee:${depth}:${previousNode.id}:${node.id}`,
+            source: previousNode.id,
+            target: node.id,
+          },
+          classes: depth === 1 ? "callee direct" : "callee transitive",
+        });
+      }
+    }
   }
 
   return [...nodeMap.values(), ...edgeList];
@@ -382,6 +489,7 @@ function GraphPanel({
   error,
 }) {
   const containerRef = useRef(null);
+  const [hoveredNode, setHoveredNode] = useState(null);
 
   useEffect(() => {
     if (!containerRef.current || !selectedFunction) {
@@ -392,81 +500,182 @@ function GraphPanel({
       container: containerRef.current,
       elements,
       layout: {
-        name: "breadthfirst",
-        directed: true,
-        padding: 30,
-        spacingFactor: 1.2,
+        name: "cose",
+        animate: true,
+        animationDuration: 900,
+        fit: true,
+        padding: 40,
+        nodeRepulsion: 18000,
+        idealEdgeLength: 150,
+        edgeElasticity: 120,
+        gravity: 0.3,
+        numIter: 1500,
+        randomize: false,
       },
+      wheelSensitivity: 0.2,
       style: [
         {
           selector: "node",
           style: {
             label: "data(label)",
-            "background-color": "#d6d3c9",
-            color: "#101828",
-            "font-size": 11,
+            "background-color": "#5b6c91",
+            color: "#ffffff",
+            "font-size": 9,
             "text-valign": "center",
             "text-halign": "center",
             "text-wrap": "wrap",
-            "text-max-width": 90,
-            width: 52,
-            height: 52,
+            "text-max-width": 72,
+            width: 44,
+            height: 44,
             "border-width": 2,
-            "border-color": "#63574a",
+            "border-color": "#dbe4ff",
+            "text-outline-width": 0,
+            "overlay-opacity": 0,
+            "transition-property":
+              "width height background-color border-color font-size text-max-width",
+            "transition-duration": "220ms",
           },
         },
         {
           selector: "node.focus",
           style: {
-            "background-color": "#0f766e",
-            color: "#f8fafc",
-            "border-color": "#134e4a",
-            width: 68,
-            height: 68,
-            "font-size": 12,
+            "background-color": "#f97316",
+            color: "#ffffff",
+            "border-color": "#ffedd5",
+            width: 72,
+            height: 72,
+            "font-size": 10,
             "font-weight": 700,
+            "text-max-width": 88,
           },
         },
         {
           selector: "node.caller",
           style: {
-            "background-color": "#fde68a",
-            "border-color": "#d97706",
+            "background-color": "#d97706",
+            "border-color": "#fed7aa",
           },
         },
         {
           selector: "node.callee",
           style: {
-            "background-color": "#bfdbfe",
-            "border-color": "#2563eb",
+            "background-color": "#2563eb",
+            "border-color": "#bfdbfe",
+          },
+        },
+        {
+          selector: "node.transitive",
+          style: {
+            opacity: 0.88,
+          },
+        },
+        {
+          selector: "node.hovered",
+          style: {
+            width: 112,
+            height: 112,
+            "font-size": 12,
+            "text-max-width": 110,
+            "border-width": 3,
+            "z-index": 999,
           },
         },
         {
           selector: "edge",
           style: {
-            width: 2.4,
+            width: 1.8,
             "curve-style": "bezier",
             "target-arrow-shape": "triangle",
-            "line-color": "#6b7280",
-            "target-arrow-color": "#6b7280",
+            "line-color": "rgba(226, 232, 240, 0.35)",
+            "target-arrow-color": "rgba(226, 232, 240, 0.35)",
+            opacity: 0.75,
+            "arrow-scale": 0.8,
           },
         },
         {
           selector: "edge.caller",
           style: {
-            "line-color": "#d97706",
-            "target-arrow-color": "#d97706",
+            "line-color": "rgba(249, 115, 22, 0.6)",
+            "target-arrow-color": "rgba(249, 115, 22, 0.6)",
           },
         },
         {
           selector: "edge.callee",
           style: {
-            "line-color": "#2563eb",
-            "target-arrow-color": "#2563eb",
+            "line-color": "rgba(59, 130, 246, 0.58)",
+            "target-arrow-color": "rgba(59, 130, 246, 0.58)",
+          },
+        },
+        {
+          selector: "edge.transitive",
+          style: {
+            "line-style": "dashed",
+            width: 1.4,
+            opacity: 0.42,
+          },
+        },
+        {
+          selector: ".dimmed",
+          style: {
+            opacity: 0.18,
           },
         },
       ],
     });
+
+    const layout = cy.layout({
+      name: "cose",
+      animate: true,
+      animationDuration: 900,
+      fit: true,
+      padding: 40,
+      nodeRepulsion: 18000,
+      idealEdgeLength: 150,
+      edgeElasticity: 120,
+      gravity: 0.3,
+      numIter: 1500,
+      randomize: false,
+    });
+    layout.run();
+
+    const basePositions = new Map();
+    const startFloating = () => {
+      cy.nodes().forEach((node) => {
+        basePositions.set(node.id(), { ...node.position() });
+      });
+    };
+
+    cy.once("layoutstop", startFloating);
+
+    const floatTimer = window.setInterval(() => {
+      const now = Date.now();
+      cy.nodes().forEach((node, index) => {
+        if (node.hasClass("focus") || node.hasClass("hovered") || node.grabbed()) {
+          return;
+        }
+
+        const base = basePositions.get(node.id());
+        if (!base) {
+          return;
+        }
+
+        const xOffset = Math.sin(now / 1200 + index * 0.85) * 10;
+        const yOffset = Math.cos(now / 1500 + index * 0.65) * 8;
+        node.animate(
+          {
+            position: {
+              x: base.x + xOffset,
+              y: base.y + yOffset,
+            },
+          },
+          {
+            duration: 1400,
+            queue: false,
+            easing: "ease-in-out",
+          },
+        );
+      });
+    }, 1500);
 
     cy.on("tap", "node", (event) => {
       const data = event.target.data();
@@ -479,7 +688,23 @@ function GraphPanel({
       });
     });
 
+    cy.on("mouseover", "node", (event) => {
+      const node = event.target;
+      cy.elements().addClass("dimmed");
+      node.removeClass("dimmed").addClass("hovered");
+      node.connectedEdges().removeClass("dimmed");
+      node.neighborhood().removeClass("dimmed");
+      setHoveredNode(node.data());
+    });
+
+    cy.on("mouseout", "node", (event) => {
+      event.target.removeClass("hovered");
+      cy.elements().removeClass("dimmed");
+      setHoveredNode(null);
+    });
+
     return () => {
+      window.clearInterval(floatTimer);
       cy.destroy();
     };
   }, [elements, onNodeSelect, selectedFunction]);
@@ -493,8 +718,18 @@ function GraphPanel({
         <div className="graph-meta">
           <span className="meta-pill">{selectedFunction?.name || "-"}</span>
           <span className="meta-pill meta-pill--muted">{selectedFunction?.package || "-"}</span>
+          <span className="meta-pill meta-pill--muted">{elements.length} elements</span>
         </div>
       </div>
+      {hoveredNode ? (
+        <div className="graph-hover-card">
+          <div className="graph-hover-card__title">{hoveredNode.label}</div>
+          <div className="graph-hover-card__meta">{hoveredNode.package || "unknown package"}</div>
+          <div className="graph-hover-card__meta">
+            {hoveredNode.file ? `${hoveredNode.file}${hoveredNode.line ? `:${hoveredNode.line}` : ""}` : hoveredNode.id}
+          </div>
+        </div>
+      ) : null}
       {error ? <div className="graph-empty">{error}</div> : null}
       {!error && isLoading ? <div className="graph-empty">Loading graph...</div> : null}
       {!error && !isLoading ? <div ref={containerRef} className="graph-canvas" /> : null}
@@ -517,11 +752,15 @@ function App() {
   const [sourceError, setSourceError] = useState("");
   const [graphError, setGraphError] = useState("");
   const [selectedFunction, setSelectedFunction] = useState(null);
-  const [graphNodes, setGraphNodes] = useState([]);
+  const [graphData, setGraphData] = useState({
+    neighborhood: [],
+    callChain: [],
+    callers: [],
+  });
 
   const graphElements = useMemo(
-    () => buildGraphElements(selectedFunction, graphNodes),
-    [graphNodes, selectedFunction],
+    () => buildGraphElements(selectedFunction, graphData),
+    [graphData, selectedFunction],
   );
 
   const loadDirectory = useCallback(async (path) => {
@@ -565,7 +804,7 @@ function App() {
 
       if (options.clearGraph) {
         setSelectedFunction(null);
-        setGraphNodes([]);
+        setGraphData({ neighborhood: [], callChain: [], callers: [] });
         setGraphError("");
       }
     } catch (error) {
@@ -607,12 +846,18 @@ function App() {
     setGraphError("");
 
     try {
-      const payload = await requestJson(
-        `/call-graph/neighborhood?functionId=${encodeURIComponent(functionMeta.function_id)}`,
-      );
-      setGraphNodes(Array.isArray(payload.nodes) ? payload.nodes : []);
+      const [neighborhoodPayload, callChainPayload, callersPayload] = await Promise.all([
+        requestJson(`/call-graph/neighborhood?functionId=${encodeURIComponent(functionMeta.function_id)}`),
+        requestJson(`/call-graph/call-chain?functionId=${encodeURIComponent(functionMeta.function_id)}`),
+        requestJson(`/call-graph/callers?functionId=${encodeURIComponent(functionMeta.function_id)}`),
+      ]);
+      setGraphData({
+        neighborhood: Array.isArray(neighborhoodPayload.nodes) ? neighborhoodPayload.nodes : [],
+        callChain: Array.isArray(callChainPayload.nodes) ? callChainPayload.nodes : [],
+        callers: Array.isArray(callersPayload.nodes) ? callersPayload.nodes : [],
+      });
     } catch (error) {
-      setGraphNodes([]);
+      setGraphData({ neighborhood: [], callChain: [], callers: [] });
       setGraphError(String(error.message || error));
     } finally {
       setIsGraphLoading(false);
@@ -638,7 +883,7 @@ function App() {
   function handleBackToBrowse() {
     setMode("browse");
     setSelectedFunction(null);
-    setGraphNodes([]);
+    setGraphData({ neighborhood: [], callChain: [], callers: [] });
     setGraphError("");
   }
 
