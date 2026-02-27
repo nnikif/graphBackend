@@ -1,0 +1,29 @@
+{
+  "name": "fastbackend",
+  "version": "1.0.0",
+  "description": "Fastify backend for CallGraphExplorer",
+  "main": "src/server.js",
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "start": "node src/server.js",
+    "check": "node --check src/server.js && node --check src/app.js && node --check src/db.js"
+  },
+  "keywords": [
+    "fastify",
+    "backend",
+    "api"
+  ],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.2.0",
+    "@fastify/helmet": "^13.0.2",
+    "@fastify/sensible": "^6.0.4",
+    "better-sqlite3": "^12.6.2",
+    "fastify": "^5.7.4"
+  }
+}
