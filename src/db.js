@@ -15,6 +15,9 @@ function createDbClient(dbPathFromEnv) {
       dbPath: null,
       ping: () => ({ ok: false, reason: "SQLITE_PATH is not configured" }),
       listQueries: () => [],
+      runQueryByName: () => [],
+      getFunctionDetail: () => null,
+      getSourceByFile: () => null,
       close: () => {},
     };
   }
@@ -46,6 +49,35 @@ function createDbClient(dbPathFromEnv) {
     FROM queries
     ORDER BY name
   `);
+  const getQuerySqlStatement = connection.prepare(`
+    SELECT sql
+    FROM queries
+    WHERE name = ?
+  `);
+  const getFunctionDetailStatement = connection.prepare(`
+    SELECT *
+    FROM dashboard_function_detail
+    WHERE function_id = ?
+  `);
+  const getSourceByFileStatement = connection.prepare(`
+    SELECT file, package, content
+    FROM sources
+    WHERE file = ?
+  `);
+
+  const preparedQueryStatements = new Map();
+
+  function getPreparedQueryByName(queryName) {
+    if (!preparedQueryStatements.has(queryName)) {
+      const row = getQuerySqlStatement.get(queryName);
+      if (!row || !row.sql) {
+        return null;
+      }
+      preparedQueryStatements.set(queryName, connection.prepare(row.sql));
+    }
+
+    return preparedQueryStatements.get(queryName);
+  }
 
   return {
     configured: true,
@@ -63,6 +95,19 @@ function createDbClient(dbPathFromEnv) {
       return includeSql
         ? listQueriesWithSqlStatement.all()
         : listQueriesStatement.all();
+    },
+    runQueryByName: (queryName, params = {}) => {
+      const statement = getPreparedQueryByName(queryName);
+      if (!statement) {
+        throw new Error(`Unknown query: ${queryName}`);
+      }
+      return statement.all(params);
+    },
+    getFunctionDetail: (functionId) => {
+      return getFunctionDetailStatement.get(functionId) || null;
+    },
+    getSourceByFile: (filePath) => {
+      return getSourceByFileStatement.get(filePath) || null;
     },
     close: () => {
       connection.close();
