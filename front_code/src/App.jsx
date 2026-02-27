@@ -86,8 +86,60 @@ function highlightGoLine(line) {
   });
 }
 
-function SourceViewer({ content }) {
+function buildFunctionMarkup(line, functionsOnLine) {
+  if (!functionsOnLine || functionsOnLine.length === 0) {
+    return highlightGoLine(line);
+  }
+
+  let cursor = 0;
+  let html = "";
+  const matches = functionsOnLine
+    .map((fn) => {
+      const start = line.indexOf(fn.name);
+      if (start === -1) {
+        return null;
+      }
+
+      return {
+        name: fn.name,
+        start,
+        end: start + fn.name.length,
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => left.start - right.start);
+
+  if (matches.length === 0) {
+    return highlightGoLine(line);
+  }
+
+  for (const match of matches) {
+    if (match.start < cursor) {
+      continue;
+    }
+
+    html += highlightGoLine(line.slice(cursor, match.start));
+    html += `<span class="tok-function-name">${escapeHtml(match.name)}</span>`;
+    cursor = match.end;
+  }
+
+  html += highlightGoLine(line.slice(cursor));
+  return html;
+}
+
+function SourceViewer({ content, functions }) {
   const lines = useMemo(() => content.split("\n"), [content]);
+  const functionsByLine = useMemo(() => {
+    const nextMap = new Map();
+
+    for (const fn of functions) {
+      const lineFunctions = nextMap.get(fn.line) || [];
+      lineFunctions.push(fn);
+      nextMap.set(fn.line, lineFunctions);
+    }
+
+    return nextMap;
+  }, [functions]);
 
   return (
     <div className="source-viewer" aria-live="polite">
@@ -96,7 +148,9 @@ function SourceViewer({ content }) {
           <span className="line-number">{index + 1}</span>
           <code
             className="line-code"
-            dangerouslySetInnerHTML={{ __html: highlightGoLine(line) || "&nbsp;" }}
+            dangerouslySetInnerHTML={{
+              __html: buildFunctionMarkup(line, functionsByLine.get(index + 1)) || "&nbsp;",
+            }}
           />
         </div>
       ))}
@@ -110,6 +164,7 @@ function App() {
   const [packageName, setPackageName] = useState("-");
   const [status, setStatus] = useState("Ready");
   const [content, setContent] = useState("");
+  const [functions, setFunctions] = useState([]);
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
 
@@ -118,6 +173,7 @@ function App() {
     if (!trimmedFile) {
       setError("Enter a file path to load.");
       setContent("");
+      setFunctions([]);
       setResolvedFile("No file loaded");
       setPackageName("-");
       setStatus("Error");
@@ -129,24 +185,39 @@ function App() {
     setStatus("Loading...");
 
     try {
-      const response = await fetch(
-        `${API_BASE}/call-graph/file?file=${encodeURIComponent(trimmedFile)}`,
-      );
+      const [fileResponse, functionsResponse] = await Promise.all([
+        fetch(`${API_BASE}/call-graph/file?file=${encodeURIComponent(trimmedFile)}`),
+        fetch(`${API_BASE}/call-graph/file-functions?file=${encodeURIComponent(trimmedFile)}`),
+      ]);
 
-      if (!response.ok) {
-        const text = await response.text();
-        throw new Error(`${response.status} ${response.statusText}: ${text}`);
+      if (!fileResponse.ok) {
+        const text = await fileResponse.text();
+        throw new Error(`${fileResponse.status} ${fileResponse.statusText}: ${text}`);
       }
 
-      const payload = await response.json();
-      const nextContent = payload.content || "";
+      if (!functionsResponse.ok) {
+        const text = await functionsResponse.text();
+        throw new Error(`${functionsResponse.status} ${functionsResponse.statusText}: ${text}`);
+      }
+
+      const [filePayload, functionsPayload] = await Promise.all([
+        fileResponse.json(),
+        functionsResponse.json(),
+      ]);
+      const nextContent = filePayload.content || "";
 
       setContent(nextContent);
-      setResolvedFile(payload.fileResolved || payload.fileRequested || trimmedFile);
-      setPackageName(payload.package || "-");
-      setStatus(`${nextContent.split("\n").length} lines`);
+      setFunctions(Array.isArray(functionsPayload.functions) ? functionsPayload.functions : []);
+      setResolvedFile(filePayload.fileResolved || filePayload.fileRequested || trimmedFile);
+      setPackageName(filePayload.package || "-");
+      setStatus(
+        `${nextContent.split("\n").length} lines, ${
+          Array.isArray(functionsPayload.functions) ? functionsPayload.functions.length : 0
+        } functions`,
+      );
     } catch (loadError) {
       setContent("");
+      setFunctions([]);
       setResolvedFile("Load failed");
       setPackageName("-");
       setError(String(loadError.message || loadError));
@@ -211,7 +282,11 @@ function App() {
           <h2>Source</h2>
           <p className="status">{status}</p>
         </div>
-        {error ? <div className="empty-state">{error}</div> : <SourceViewer content={content} />}
+        {error ? (
+          <div className="empty-state">{error}</div>
+        ) : (
+          <SourceViewer content={content} functions={functions} />
+        )}
       </section>
     </main>
   );

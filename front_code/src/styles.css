@@ -19,6 +19,7 @@
   --tok-keyword: #60a5fa;
   --tok-builtin: #34d399;
   --tok-ident: #e5e7eb;
+  --tok-function-name: #f97316;
 }
 
 * {
@@ -218,6 +219,11 @@ button:disabled {
 
 .tok-ident {
   color: var(--tok-ident);
+}
+
+.tok-function-name {
+  color: var(--tok-function-name);
+  font-weight: 700;
 }
 
 .empty-state {
