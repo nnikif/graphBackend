@@ -280,8 +280,8 @@ code {
 
 .graph-hover-card {
   position: absolute;
-  top: 4.25rem;
-  left: 1rem;
+  top: 5rem;
+  left: 1.5rem;
   z-index: 2;
   width: min(24rem, calc(100% - 2rem));
   max-width: calc(100% - 2rem);
@@ -292,6 +292,7 @@ code {
   color: #f8fafc;
   backdrop-filter: blur(12px);
   box-shadow: 0 14px 28px rgba(15, 23, 42, 0.24);
+  pointer-events: none;
 }
 
 .graph-hover-card__title {
